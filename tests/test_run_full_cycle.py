@@ -242,3 +242,71 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         for question in QUESTION_COLUMNS
     ]
     assert len(accuracy_ground_truth) == len(QUESTION_COLUMNS)
+
+
+def test_run_full_cycle_skip_pipeline_reuses_existing_ontology(
+    tmp_path: Path, tmp_config: Path, monkeypatch
+) -> None:
+    workdir = tmp_path / "existing"
+    _write_ontology(workdir)
+
+    def fail_run_pipeline_main(argv: List[str] | None) -> int:  # pragma: no cover - defensive
+        raise AssertionError("run_pipeline.main should not be invoked when --skip-pipeline is set")
+
+    monkeypatch.setattr(run_full_cycle.run_pipeline, "main", fail_run_pipeline_main)
+
+    collector_calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+
+    def fake_collect_for_entry(*args, **kwargs):
+        collector_calls.append((args, kwargs))
+        return {"total_unique": 0}, []
+
+    monkeypatch.setattr(run_full_cycle.collect_theories, "collect_for_entry", fake_collect_for_entry)
+    monkeypatch.setattr(run_full_cycle.collect_theories, "_load_api_keys", lambda *a, **k: {})
+    monkeypatch.setattr(run_full_cycle.collect_theories, "_maybe_build_llm_client", lambda *a, **k: None)
+
+    class DummyClassifier:
+        def attach_manager(self, manager: Any) -> None:  # pragma: no cover - trivial
+            self.manager = manager
+
+        def summarize(self, assignments: List[Any], *, include_ids: bool = False) -> Dict[str, Any]:
+            return {}
+
+        @classmethod
+        def from_config(cls, *a, **k):  # pragma: no cover - simple factory
+            return cls()
+
+    monkeypatch.setattr(run_full_cycle.collect_theories, "TheoryClassifier", DummyClassifier)
+    monkeypatch.setattr(run_full_cycle.collect_theories, "QuestionExtractor", lambda *a, **k: object())
+    monkeypatch.setattr(
+        run_full_cycle.collect_theories,
+        "classify_and_extract_parallel",
+        lambda papers, classifier, extractor, workers=1: ([], []),
+    )
+
+    args = [
+        "--workdir",
+        str(workdir),
+        "--config",
+        str(tmp_config),
+        "--collector-query",
+        "aging theory",
+        "--skip-pipeline",
+    ]
+
+    result = run_full_cycle.main(args)
+    assert result == 0
+
+    assert collector_calls, "Collector should be executed when reusing existing ontology"
+
+    outputs_dir = {
+        "papers": workdir / "papers.csv",
+        "theories": workdir / "theories.csv",
+        "theory_papers": workdir / "theory_papers.csv",
+        "questions": workdir / "questions.csv",
+    }
+    for path in outputs_dir.values():
+        assert path.exists()
+
+    competition_dir = workdir / "competition"
+    assert competition_dir.exists()
