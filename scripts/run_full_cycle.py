@@ -270,6 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force regeneration of pipeline artefacts even when outputs already exist.",
     )
     parser.add_argument(
+        "--skip-pipeline",
+        action="store_true",
+        help=(
+            "Reuse existing ontology and review artefacts without re-running the "
+            "step 1–5 pipeline stages."
+        ),
+    )
+    parser.add_argument(
         "--confidence-threshold",
         type=float,
         default=0.6,
@@ -310,52 +318,77 @@ def _prepare_collector_config(
     corpus_cfg.setdefault("cache_dir", str(workdir / "collector_state"))
 
     outputs_cfg = config.setdefault("outputs", {})
-    outputs_cfg.setdefault("papers", str(workdir / "papers.csv"))
-    outputs_cfg.setdefault("theories", str(workdir / "theories.csv"))
-    outputs_cfg.setdefault("theory_papers", str(workdir / "theory_papers.csv"))
-    outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
-    outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
-    outputs_cfg.setdefault("reports", str(workdir / "reports"))
+    outputs_cfg["papers"] = str(workdir / "papers.csv")
+    outputs_cfg["theories"] = str(workdir / "theories.csv")
+    outputs_cfg["theory_papers"] = str(workdir / "theory_papers.csv")
+    outputs_cfg["questions"] = str(workdir / "questions.csv")
+    outputs_cfg["cache_dir"] = str(workdir / "cache")
+    outputs_cfg["reports"] = str(workdir / "reports")
+
     competition_cfg = outputs_cfg.setdefault("competition", {})
     competition_dir = competition_cfg.get("base_dir")
-    if competition_dir:
-        base_dir = Path(competition_dir)
-    else:
-        base_dir = workdir / "competition"
-    competition_cfg.setdefault("papers", str(base_dir / "papers.csv"))
-    competition_cfg.setdefault("theories", str(base_dir / "theories.csv"))
-    competition_cfg.setdefault("theory_papers", str(base_dir / "theory_papers.csv"))
-    competition_cfg.setdefault("questions", str(base_dir / "questions.csv"))
+    base_dir = Path(competition_dir) if competition_dir else workdir / "competition"
+    competition_cfg.setdefault("base_dir", str(base_dir))
+
+    default_competition_outputs = {
+        "papers": base_dir / "papers.csv",
+        "theories": base_dir / "theories.csv",
+        "theory_papers": base_dir / "theory_papers.csv",
+        "questions": base_dir / "questions.csv",
+    }
+    for key, path in default_competition_outputs.items():
+        value = competition_cfg.get(key)
+        if isinstance(value, Path):
+            competition_cfg[key] = str(value)
+            continue
+        competition_cfg[key] = str(path)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _strip_bootstrap_providers(entry: Any) -> Any:
+    if isinstance(entry, Mapping):
+        cleaned = dict(entry)
+        cleaned.pop("providers", None)
+        return cleaned
+    return entry
 
-    workdir = Path(args.workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
-    ontology_path = workdir / "aging_ontology.json"
 
-    pipeline_args = ["--workdir", str(workdir), "--collector-query", args.collector_query]
-    if args.limit is not None:
-        pipeline_args.extend(["--limit", str(args.limit)])
-    if args.force:
-        pipeline_args.append("--force")
+def _configure_offline_mode(config: MutableMapping[str, Any]) -> None:
+    """Disable provider-backed fetching so we can reuse cached artefacts only."""
 
-    logger.info("Running review pipeline with args: %s", pipeline_args)
-    pipeline_result = run_pipeline.main(pipeline_args)
-    if pipeline_result != 0:
-        return pipeline_result
+    providers = config.get("providers")
+    if isinstance(providers, list):
+        config["providers"] = []
 
-    targets = _targets_from_ontology(ontology_path, default_target=args.default_target)
-    if not targets:
-        logger.warning("No ontology groups discovered in %s; skipping collector run.", ontology_path)
-        return 0
+    corpus_cfg = config.get("corpus")
+    if isinstance(corpus_cfg, MutableMapping):
+        bootstrap_cfg = corpus_cfg.get("bootstrap")
+        if isinstance(bootstrap_cfg, Mapping):
+            cleaned_bootstrap: Dict[str, Any] = dict(bootstrap_cfg)
+            cleaned_bootstrap["enabled"] = False
+            cleaned_bootstrap["providers"] = []
 
-    config_path = args.config if isinstance(args.config, Path) else Path(args.config)
-    config = collect_theories.load_config(config_path)
-    _prepare_collector_config(config, targets=targets, ontology_path=ontology_path, workdir=workdir)
+            queries = cleaned_bootstrap.get("queries")
+            if isinstance(queries, Mapping):
+                cleaned_bootstrap["queries"] = {
+                    key: _strip_bootstrap_providers(value)
+                    for key, value in queries.items()
+                }
+            corpus_cfg["bootstrap"] = cleaned_bootstrap
 
+        expansion_cfg = corpus_cfg.get("expansion")
+        if isinstance(expansion_cfg, Mapping):
+            cleaned_expansion = dict(expansion_cfg)
+            cleaned_expansion["enabled"] = False
+            corpus_cfg["expansion"] = cleaned_expansion
+
+
+def _run_collector(
+    *,
+    args: argparse.Namespace,
+    config_path: Path,
+    config: MutableMapping[str, Any],
+    workdir: Path,
+) -> int:
     collector_args = [
         args.collector_query,
         "--config",
@@ -367,7 +400,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         collector_args.extend(["--limit", str(args.limit)])
     if args.providers:
         collector_args.extend(["--providers", *args.providers])
-    if args.no_resume:
+    if getattr(args, "no_resume", False):
         collector_args.append("--no-resume")
 
     collector_parser = collect_theories.build_parser()
@@ -380,38 +413,94 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path=config_path,
     )
 
-    if result == 0:
-        outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
-        theories_path = Path(outputs_cfg.get("theories", workdir / "theories.csv"))
-        questions_path = Path(outputs_cfg.get("questions", workdir / "questions.csv"))
-        reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
-        try:
-            score_progress.generate_progress_report(
-                theories_path,
-                questions_path,
-                reports_dir,
-                confidence_threshold=float(args.confidence_threshold),
-            )
-        except Exception:  # pragma: no cover - defensive logging
-            logger.exception("Failed to generate progress report")
+    if result != 0:
+        return result
 
-        if args.questions_ground_truth:
-            try:
-                report = question_validation.validate_from_paths(
-                    questions_path,
-                    Path(args.questions_ground_truth),
-                )
-                logger.info("\n%s", question_validation.format_report(report))
-                if args.questions_report:
-                    question_validation.write_report(report, Path(args.questions_report))
-                if report.has_failures and args.fail_on_question_mismatch:
-                    return 1
-            except Exception:
-                logger.exception("Question validation failed")
-                if args.fail_on_question_mismatch:
-                    return 1
+    outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
+    theories_path = Path(outputs_cfg.get("theories", workdir / "theories.csv"))
+    questions_path = Path(outputs_cfg.get("questions", workdir / "questions.csv"))
+    reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
+    try:
+        score_progress.generate_progress_report(
+            theories_path,
+            questions_path,
+            reports_dir,
+            confidence_threshold=float(args.confidence_threshold),
+        )
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to generate progress report")
+
+    if args.questions_ground_truth:
+        try:
+            report = question_validation.validate_from_paths(
+                questions_path,
+                Path(args.questions_ground_truth),
+            )
+            logger.info("\n%s", question_validation.format_report(report))
+            if args.questions_report:
+                question_validation.write_report(report, Path(args.questions_report))
+            if report.has_failures and args.fail_on_question_mismatch:
+                return 1
+        except Exception:
+            logger.exception("Question validation failed")
+            if args.fail_on_question_mismatch:
+                return 1
 
     return result
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    workdir = Path(args.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    ontology_path = workdir / "aging_ontology.json"
+
+    if not args.skip_pipeline:
+        pipeline_args = ["--workdir", str(workdir), "--collector-query", args.collector_query]
+        if args.limit is not None:
+            pipeline_args.extend(["--limit", str(args.limit)])
+        if args.force:
+            pipeline_args.append("--force")
+
+        logger.info("Running review pipeline with args: %s", pipeline_args)
+        pipeline_result = run_pipeline.main(pipeline_args)
+        if pipeline_result != 0:
+            return pipeline_result
+    else:
+        logger.info(
+            "Skipping review pipeline execution; expecting existing artefacts under %s.",
+            workdir,
+        )
+
+    try:
+        targets = _targets_from_ontology(ontology_path, default_target=args.default_target)
+    except FileNotFoundError:
+        logger.error(
+            "Ontology payload not found at %s. Run the pipeline once before using --skip-pipeline.",
+            ontology_path,
+        )
+        return 1
+    if not targets:
+        logger.warning("No ontology groups discovered in %s; skipping collector run.", ontology_path)
+        return 0
+
+    config_path = args.config if isinstance(args.config, Path) else Path(args.config)
+    config = collect_theories.load_config(config_path)
+    if args.skip_pipeline and not args.providers:
+        logger.info(
+            "--skip-pipeline requested with no providers; running collector in resume-only mode."
+        )
+        _configure_offline_mode(config)
+    _prepare_collector_config(config, targets=targets, ontology_path=ontology_path, workdir=workdir)
+
+    return _run_collector(
+        args=args,
+        config_path=config_path,
+        config=config,
+        workdir=workdir,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
