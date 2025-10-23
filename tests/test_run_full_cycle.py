@@ -1,7 +1,7 @@
 import csv
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -68,6 +68,41 @@ def test_prepare_collector_config_rewrites_outputs(tmp_path: Path) -> None:
         expected_competition_dir / "theory_papers.csv"
     )
     assert competition_cfg["questions"] == str(cli_questions)
+
+
+def test_configure_offline_mode_disables_providers() -> None:
+    config: Dict[str, Any] = {
+        "providers": [
+            {"name": "openalex", "type": "openalex", "enabled": True},
+            {"name": "pubmed", "type": "pubmed", "enabled": True},
+        ],
+        "corpus": {
+            "bootstrap": {
+                "enabled": True,
+                "providers": ["openalex", "pubmed"],
+                "queries": {
+                    "seed": {
+                        "query": "aging theory",
+                        "providers": ["openalex", "pubmed"],
+                    }
+                },
+            },
+            "expansion": {"enabled": True},
+        },
+    }
+
+    run_full_cycle._configure_offline_mode(config)
+
+    assert config["providers"] == []
+    corpus_cfg = config["corpus"]
+    bootstrap_cfg = corpus_cfg["bootstrap"]
+    assert bootstrap_cfg["enabled"] is False
+    assert bootstrap_cfg.get("providers") == []
+    for entry in bootstrap_cfg.get("queries", {}).values():
+        if isinstance(entry, Mapping):
+            assert "providers" not in entry
+    expansion_cfg = corpus_cfg["expansion"]
+    assert expansion_cfg["enabled"] is False
 
 
 def test_run_full_cycle_invokes_pipeline_and_collector(

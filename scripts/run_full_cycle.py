@@ -343,7 +343,45 @@ def _prepare_collector_config(
             continue
         competition_cfg[key] = str(path)
 
-PM
+
+def _strip_bootstrap_providers(entry: Any) -> Any:
+    if isinstance(entry, Mapping):
+        cleaned = dict(entry)
+        cleaned.pop("providers", None)
+        return cleaned
+    return entry
+
+
+def _configure_offline_mode(config: MutableMapping[str, Any]) -> None:
+    """Disable provider-backed fetching so we can reuse cached artefacts only."""
+
+    providers = config.get("providers")
+    if isinstance(providers, list):
+        config["providers"] = []
+
+    corpus_cfg = config.get("corpus")
+    if isinstance(corpus_cfg, MutableMapping):
+        bootstrap_cfg = corpus_cfg.get("bootstrap")
+        if isinstance(bootstrap_cfg, Mapping):
+            cleaned_bootstrap: Dict[str, Any] = dict(bootstrap_cfg)
+            cleaned_bootstrap["enabled"] = False
+            cleaned_bootstrap["providers"] = []
+
+            queries = cleaned_bootstrap.get("queries")
+            if isinstance(queries, Mapping):
+                cleaned_bootstrap["queries"] = {
+                    key: _strip_bootstrap_providers(value)
+                    for key, value in queries.items()
+                }
+            corpus_cfg["bootstrap"] = cleaned_bootstrap
+
+        expansion_cfg = corpus_cfg.get("expansion")
+        if isinstance(expansion_cfg, Mapping):
+            cleaned_expansion = dict(expansion_cfg)
+            cleaned_expansion["enabled"] = False
+            corpus_cfg["expansion"] = cleaned_expansion
+
+
 def _run_collector(
     *,
     args: argparse.Namespace,
@@ -428,7 +466,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         logger.info("Running review pipeline with args: %s", pipeline_args)
         pipeline_result = run_pipeline.main(pipeline_args)
-        if PMpipeline_result != 0:
+        if pipeline_result != 0:
             return pipeline_result
     else:
         logger.info(
@@ -450,6 +488,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config_path = args.config if isinstance(args.config, Path) else Path(args.config)
     config = collect_theories.load_config(config_path)
+    if args.skip_pipeline and not args.providers:
+        logger.info(
+            "--skip-pipeline requested with no providers; running collector in resume-only mode."
+        )
+        _configure_offline_mode(config)
     _prepare_collector_config(config, targets=targets, ontology_path=ontology_path, workdir=workdir)
 
     return _run_collector(

@@ -18,6 +18,7 @@ if __package__ is None:  # pragma: no cover - convenience for direct execution
 
 from scripts import collect_theories, run_pipeline
 from scripts.run_full_cycle import (
+    _configure_offline_mode,
     _prepare_collector_config,
     _run_collector,
     _targets_from_ontology,
@@ -129,6 +130,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = args.config if isinstance(args.config, Path) else Path(args.config)
     config = collect_theories.load_config(config_path)
+    if not args.providers:
+        logger.info("Disabling remote providers; reusing cached artefacts only.")
+        _configure_offline_mode(config)
     _prepare_collector_config(config, targets=targets, ontology_path=ontology_path, workdir=workdir)
 
     return _run_collector(
