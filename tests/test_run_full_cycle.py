@@ -24,9 +24,11 @@ from theories_pipeline.outputs import (
 @pytest.fixture
 def tmp_config(tmp_path: Path) -> Path:
     config_path = tmp_path / "pipeline.json"
+    seed_papers_path = tmp_path / "seed_papers.json"
+    seed_papers_path.write_text(json.dumps([]), encoding="utf-8")
     payload = {
         "data_sources": {
-            "seed_papers": str((PROJECT_ROOT / "data/examples/seed_papers.json").resolve()),
+            "seed_papers": str(seed_papers_path),
         },
         "providers": [
             {
@@ -67,6 +69,58 @@ def _write_ontology(workdir: Path) -> None:
     }
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "aging_ontology.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_prepare_collector_config_rewrites_outputs(tmp_path: Path) -> None:
+    workdir = tmp_path / "prepared"
+    targets = {"Example": {"target": 10}}
+    ontology_path = tmp_path / "aging_ontology.json"
+
+    cli_questions = tmp_path / "cli_questions.csv"
+
+    config: Dict[str, Any] = {
+        "corpus": {},
+        "outputs": {
+            "papers": "data/examples/papers.csv",
+            "theories": "data/examples/theories.csv",
+            "theory_papers": "data/examples/theory_papers.csv",
+            "questions": "data/examples/questions.csv",
+            "cache_dir": "data/cache",
+            "reports": "data/reports",
+            "competition": {
+                "papers": "data/examples/competition/papers.csv",
+                "theories": "data/examples/competition/theories.csv",
+                "theory_papers": "data/examples/competition/theory_papers.csv",
+                "questions": "data/examples/competition/questions.csv",
+            },
+        },
+    }
+    config["outputs"]["competition"]["questions"] = cli_questions
+
+    run_full_cycle._prepare_collector_config(
+        config,
+        targets=targets,
+        ontology_path=ontology_path,
+        workdir=workdir,
+    )
+
+    outputs_cfg = config["outputs"]
+    assert outputs_cfg["papers"] == str(workdir / "papers.csv")
+    assert outputs_cfg["theories"] == str(workdir / "theories.csv")
+    assert outputs_cfg["theory_papers"] == str(workdir / "theory_papers.csv")
+    assert outputs_cfg["questions"] == str(workdir / "questions.csv")
+    assert outputs_cfg["cache_dir"] == str(workdir / "cache")
+    assert outputs_cfg["reports"] == str(workdir / "reports")
+
+    competition_cfg = outputs_cfg["competition"]
+    expected_competition_dir = workdir / "competition"
+    assert competition_cfg["base_dir"] == str(expected_competition_dir)
+    assert competition_cfg["papers"] == str(expected_competition_dir / "papers.csv")
+    assert competition_cfg["theories"] == str(expected_competition_dir / "theories.csv")
+    assert competition_cfg["theory_papers"] == str(
+        expected_competition_dir / "theory_papers.csv"
+    )
+    assert competition_cfg["questions"] == str(cli_questions)
 
 
 def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_config: Path, monkeypatch) -> None:
