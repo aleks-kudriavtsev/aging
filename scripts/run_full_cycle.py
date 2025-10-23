@@ -310,22 +310,30 @@ def _prepare_collector_config(
     corpus_cfg.setdefault("cache_dir", str(workdir / "collector_state"))
 
     outputs_cfg = config.setdefault("outputs", {})
-    outputs_cfg.setdefault("papers", str(workdir / "papers.csv"))
-    outputs_cfg.setdefault("theories", str(workdir / "theories.csv"))
-    outputs_cfg.setdefault("theory_papers", str(workdir / "theory_papers.csv"))
-    outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
-    outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
-    outputs_cfg.setdefault("reports", str(workdir / "reports"))
+    outputs_cfg["papers"] = str(workdir / "papers.csv")
+    outputs_cfg["theories"] = str(workdir / "theories.csv")
+    outputs_cfg["theory_papers"] = str(workdir / "theory_papers.csv")
+    outputs_cfg["questions"] = str(workdir / "questions.csv")
+    outputs_cfg["cache_dir"] = str(workdir / "cache")
+    outputs_cfg["reports"] = str(workdir / "reports")
+
     competition_cfg = outputs_cfg.setdefault("competition", {})
     competition_dir = competition_cfg.get("base_dir")
-    if competition_dir:
-        base_dir = Path(competition_dir)
-    else:
-        base_dir = workdir / "competition"
-    competition_cfg.setdefault("papers", str(base_dir / "papers.csv"))
-    competition_cfg.setdefault("theories", str(base_dir / "theories.csv"))
-    competition_cfg.setdefault("theory_papers", str(base_dir / "theory_papers.csv"))
-    competition_cfg.setdefault("questions", str(base_dir / "questions.csv"))
+    base_dir = Path(competition_dir) if competition_dir else workdir / "competition"
+    competition_cfg.setdefault("base_dir", str(base_dir))
+
+    default_competition_outputs = {
+        "papers": base_dir / "papers.csv",
+        "theories": base_dir / "theories.csv",
+        "theory_papers": base_dir / "theory_papers.csv",
+        "questions": base_dir / "questions.csv",
+    }
+    for key, path in default_competition_outputs.items():
+        value = competition_cfg.get(key)
+        if isinstance(value, Path):
+            competition_cfg[key] = str(value)
+            continue
+        competition_cfg[key] = str(path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
