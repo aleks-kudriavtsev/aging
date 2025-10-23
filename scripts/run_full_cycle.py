@@ -343,7 +343,7 @@ def _prepare_collector_config(
             continue
         competition_cfg[key] = str(path)
 
-
+PM
 def _run_collector(
     *,
     args: argparse.Namespace,
@@ -428,7 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         logger.info("Running review pipeline with args: %s", pipeline_args)
         pipeline_result = run_pipeline.main(pipeline_args)
-        if pipeline_result != 0:
+        if PMpipeline_result != 0:
             return pipeline_result
     else:
         logger.info(
