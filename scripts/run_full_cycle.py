@@ -270,6 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force regeneration of pipeline artefacts even when outputs already exist.",
     )
     parser.add_argument(
+        "--skip-pipeline",
+        action="store_true",
+        help=(
+            "Reuse existing ontology and review artefacts without re-running the "
+            "step 1–5 pipeline stages."
+        ),
+    )
+    parser.add_argument(
         "--confidence-threshold",
         type=float,
         default=0.6,
@@ -310,22 +318,30 @@ def _prepare_collector_config(
     corpus_cfg.setdefault("cache_dir", str(workdir / "collector_state"))
 
     outputs_cfg = config.setdefault("outputs", {})
-    outputs_cfg.setdefault("papers", str(workdir / "papers.csv"))
-    outputs_cfg.setdefault("theories", str(workdir / "theories.csv"))
-    outputs_cfg.setdefault("theory_papers", str(workdir / "theory_papers.csv"))
-    outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
-    outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
-    outputs_cfg.setdefault("reports", str(workdir / "reports"))
+    outputs_cfg["papers"] = str(workdir / "papers.csv")
+    outputs_cfg["theories"] = str(workdir / "theories.csv")
+    outputs_cfg["theory_papers"] = str(workdir / "theory_papers.csv")
+    outputs_cfg["questions"] = str(workdir / "questions.csv")
+    outputs_cfg["cache_dir"] = str(workdir / "cache")
+    outputs_cfg["reports"] = str(workdir / "reports")
+
     competition_cfg = outputs_cfg.setdefault("competition", {})
     competition_dir = competition_cfg.get("base_dir")
-    if competition_dir:
-        base_dir = Path(competition_dir)
-    else:
-        base_dir = workdir / "competition"
-    competition_cfg.setdefault("papers", str(base_dir / "papers.csv"))
-    competition_cfg.setdefault("theories", str(base_dir / "theories.csv"))
-    competition_cfg.setdefault("theory_papers", str(base_dir / "theory_papers.csv"))
-    competition_cfg.setdefault("questions", str(base_dir / "questions.csv"))
+    base_dir = Path(competition_dir) if competition_dir else workdir / "competition"
+    competition_cfg.setdefault("base_dir", str(base_dir))
+
+    default_competition_outputs = {
+        "papers": base_dir / "papers.csv",
+        "theories": base_dir / "theories.csv",
+        "theory_papers": base_dir / "theory_papers.csv",
+        "questions": base_dir / "questions.csv",
+    }
+    for key, path in default_competition_outputs.items():
+        value = competition_cfg.get(key)
+        if isinstance(value, Path):
+            competition_cfg[key] = str(value)
+            continue
+        competition_cfg[key] = str(path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -336,18 +352,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     ontology_path = workdir / "aging_ontology.json"
 
-    pipeline_args = ["--workdir", str(workdir), "--collector-query", args.collector_query]
-    if args.limit is not None:
-        pipeline_args.extend(["--limit", str(args.limit)])
-    if args.force:
-        pipeline_args.append("--force")
+    if not args.skip_pipeline:
+        pipeline_args = ["--workdir", str(workdir), "--collector-query", args.collector_query]
+        if args.limit is not None:
+            pipeline_args.extend(["--limit", str(args.limit)])
+        if args.force:
+            pipeline_args.append("--force")
 
-    logger.info("Running review pipeline with args: %s", pipeline_args)
-    pipeline_result = run_pipeline.main(pipeline_args)
-    if pipeline_result != 0:
-        return pipeline_result
+        logger.info("Running review pipeline with args: %s", pipeline_args)
+        pipeline_result = run_pipeline.main(pipeline_args)
+        if pipeline_result != 0:
+            return pipeline_result
+    else:
+        logger.info(
+            "Skipping review pipeline execution; expecting existing artefacts under %s.",
+            workdir,
+        )
 
-    targets = _targets_from_ontology(ontology_path, default_target=args.default_target)
+    try:
+        targets = _targets_from_ontology(ontology_path, default_target=args.default_target)
+    except FileNotFoundError:
+        logger.error(
+            "Ontology payload not found at %s. Run the pipeline once before using --skip-pipeline.",
+            ontology_path,
+        )
+        return 1
     if not targets:
         logger.warning("No ontology groups discovered in %s; skipping collector run.", ontology_path)
         return 0

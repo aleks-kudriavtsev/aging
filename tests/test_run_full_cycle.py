@@ -24,9 +24,11 @@ from theories_pipeline.outputs import (
 @pytest.fixture
 def tmp_config(tmp_path: Path) -> Path:
     config_path = tmp_path / "pipeline.json"
+    seed_papers_path = tmp_path / "seed_papers.json"
+    seed_papers_path.write_text(json.dumps([]), encoding="utf-8")
     payload = {
         "data_sources": {
-            "seed_papers": str((PROJECT_ROOT / "data/examples/seed_papers.json").resolve()),
+            "seed_papers": str(seed_papers_path),
         },
         "providers": [
             {
@@ -67,6 +69,58 @@ def _write_ontology(workdir: Path) -> None:
     }
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "aging_ontology.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_prepare_collector_config_rewrites_outputs(tmp_path: Path) -> None:
+    workdir = tmp_path / "prepared"
+    targets = {"Example": {"target": 10}}
+    ontology_path = tmp_path / "aging_ontology.json"
+
+    cli_questions = tmp_path / "cli_questions.csv"
+
+    config: Dict[str, Any] = {
+        "corpus": {},
+        "outputs": {
+            "papers": "data/examples/papers.csv",
+            "theories": "data/examples/theories.csv",
+            "theory_papers": "data/examples/theory_papers.csv",
+            "questions": "data/examples/questions.csv",
+            "cache_dir": "data/cache",
+            "reports": "data/reports",
+            "competition": {
+                "papers": "data/examples/competition/papers.csv",
+                "theories": "data/examples/competition/theories.csv",
+                "theory_papers": "data/examples/competition/theory_papers.csv",
+                "questions": "data/examples/competition/questions.csv",
+            },
+        },
+    }
+    config["outputs"]["competition"]["questions"] = cli_questions
+
+    run_full_cycle._prepare_collector_config(
+        config,
+        targets=targets,
+        ontology_path=ontology_path,
+        workdir=workdir,
+    )
+
+    outputs_cfg = config["outputs"]
+    assert outputs_cfg["papers"] == str(workdir / "papers.csv")
+    assert outputs_cfg["theories"] == str(workdir / "theories.csv")
+    assert outputs_cfg["theory_papers"] == str(workdir / "theory_papers.csv")
+    assert outputs_cfg["questions"] == str(workdir / "questions.csv")
+    assert outputs_cfg["cache_dir"] == str(workdir / "cache")
+    assert outputs_cfg["reports"] == str(workdir / "reports")
+
+    competition_cfg = outputs_cfg["competition"]
+    expected_competition_dir = workdir / "competition"
+    assert competition_cfg["base_dir"] == str(expected_competition_dir)
+    assert competition_cfg["papers"] == str(expected_competition_dir / "papers.csv")
+    assert competition_cfg["theories"] == str(expected_competition_dir / "theories.csv")
+    assert competition_cfg["theory_papers"] == str(
+        expected_competition_dir / "theory_papers.csv"
+    )
+    assert competition_cfg["questions"] == str(cli_questions)
 
 
 def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_config: Path, monkeypatch) -> None:
@@ -188,3 +242,71 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         for question in QUESTION_COLUMNS
     ]
     assert len(accuracy_ground_truth) == len(QUESTION_COLUMNS)
+
+
+def test_run_full_cycle_skip_pipeline_reuses_existing_ontology(
+    tmp_path: Path, tmp_config: Path, monkeypatch
+) -> None:
+    workdir = tmp_path / "existing"
+    _write_ontology(workdir)
+
+    def fail_run_pipeline_main(argv: List[str] | None) -> int:  # pragma: no cover - defensive
+        raise AssertionError("run_pipeline.main should not be invoked when --skip-pipeline is set")
+
+    monkeypatch.setattr(run_full_cycle.run_pipeline, "main", fail_run_pipeline_main)
+
+    collector_calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+
+    def fake_collect_for_entry(*args, **kwargs):
+        collector_calls.append((args, kwargs))
+        return {"total_unique": 0}, []
+
+    monkeypatch.setattr(run_full_cycle.collect_theories, "collect_for_entry", fake_collect_for_entry)
+    monkeypatch.setattr(run_full_cycle.collect_theories, "_load_api_keys", lambda *a, **k: {})
+    monkeypatch.setattr(run_full_cycle.collect_theories, "_maybe_build_llm_client", lambda *a, **k: None)
+
+    class DummyClassifier:
+        def attach_manager(self, manager: Any) -> None:  # pragma: no cover - trivial
+            self.manager = manager
+
+        def summarize(self, assignments: List[Any], *, include_ids: bool = False) -> Dict[str, Any]:
+            return {}
+
+        @classmethod
+        def from_config(cls, *a, **k):  # pragma: no cover - simple factory
+            return cls()
+
+    monkeypatch.setattr(run_full_cycle.collect_theories, "TheoryClassifier", DummyClassifier)
+    monkeypatch.setattr(run_full_cycle.collect_theories, "QuestionExtractor", lambda *a, **k: object())
+    monkeypatch.setattr(
+        run_full_cycle.collect_theories,
+        "classify_and_extract_parallel",
+        lambda papers, classifier, extractor, workers=1: ([], []),
+    )
+
+    args = [
+        "--workdir",
+        str(workdir),
+        "--config",
+        str(tmp_config),
+        "--collector-query",
+        "aging theory",
+        "--skip-pipeline",
+    ]
+
+    result = run_full_cycle.main(args)
+    assert result == 0
+
+    assert collector_calls, "Collector should be executed when reusing existing ontology"
+
+    outputs_dir = {
+        "papers": workdir / "papers.csv",
+        "theories": workdir / "theories.csv",
+        "theory_papers": workdir / "theory_papers.csv",
+        "questions": workdir / "questions.csv",
+    }
+    for path in outputs_dir.values():
+        assert path.exists()
+
+    competition_dir = workdir / "competition"
+    assert competition_dir.exists()
