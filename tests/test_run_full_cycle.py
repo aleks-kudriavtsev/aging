@@ -1,10 +1,7 @@
 import csv
-import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,56 +16,6 @@ from theories_pipeline.outputs import (
     QUESTION_COLUMNS,
     QUESTION_CONFIDENCE_COLUMNS,
 )
-
-
-@pytest.fixture
-def tmp_config(tmp_path: Path) -> Path:
-    config_path = tmp_path / "pipeline.json"
-    seed_papers_path = tmp_path / "seed_papers.json"
-    seed_papers_path.write_text(json.dumps([]), encoding="utf-8")
-    payload = {
-        "data_sources": {
-            "seed_papers": str(seed_papers_path),
-        },
-        "providers": [
-            {
-                "name": "pubmed",
-                "type": "pubmed",
-                "enabled": False,
-            }
-        ],
-        "outputs": {},
-        "corpus": {},
-    }
-    config_path.write_text(json.dumps(payload), encoding="utf-8")
-    return config_path
-
-
-def _write_ontology(workdir: Path) -> None:
-    payload = {
-        "ontology": {
-            "final": {
-                "groups": [
-                    {
-                        "name": "Cellular Mechanisms",
-                        "suggested_queries": ["cellular aging mechanisms"],
-                        "theories": [
-                            {
-                                "preferred_label": "Senescence Cascade",
-                                "suggested_queries": ["senescence cascade aging"],
-                                "representative_titles": ["Title A"],
-                            },
-                            {
-                                "preferred_label": "Telomere Attrition",
-                            },
-                        ],
-                    }
-                ]
-            }
-        }
-    }
-    workdir.mkdir(parents=True, exist_ok=True)
-    (workdir / "aging_ontology.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_prepare_collector_config_rewrites_outputs(tmp_path: Path) -> None:
@@ -123,7 +70,9 @@ def test_prepare_collector_config_rewrites_outputs(tmp_path: Path) -> None:
     assert competition_cfg["questions"] == str(cli_questions)
 
 
-def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_config: Path, monkeypatch) -> None:
+def test_run_full_cycle_invokes_pipeline_and_collector(
+    tmp_path: Path, tmp_config: Path, write_ontology, monkeypatch
+) -> None:
     workdir = tmp_path / "cycle"
 
     pipeline_calls: List[List[str]] = []
@@ -131,7 +80,7 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
     def fake_run_pipeline_main(argv: List[str] | None) -> int:
         pipeline_calls.append(list(argv or []))
         target_dir = Path(argv[argv.index("--workdir") + 1]) if argv else workdir
-        _write_ontology(Path(target_dir))
+        write_ontology(Path(target_dir))
         return 0
 
     monkeypatch.setattr(run_full_cycle.run_pipeline, "main", fake_run_pipeline_main)
@@ -245,10 +194,10 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
 
 
 def test_run_full_cycle_skip_pipeline_reuses_existing_ontology(
-    tmp_path: Path, tmp_config: Path, monkeypatch
+    tmp_path: Path, tmp_config: Path, write_ontology, monkeypatch
 ) -> None:
     workdir = tmp_path / "existing"
-    _write_ontology(workdir)
+    write_ontology(workdir)
 
     def fail_run_pipeline_main(argv: List[str] | None) -> int:  # pragma: no cover - defensive
         raise AssertionError("run_pipeline.main should not be invoked when --skip-pipeline is set")

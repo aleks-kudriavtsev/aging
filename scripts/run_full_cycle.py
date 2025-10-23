@@ -343,6 +343,73 @@ def _prepare_collector_config(
             continue
         competition_cfg[key] = str(path)
 
+PM
+def _run_collector(
+    *,
+    args: argparse.Namespace,
+    config_path: Path,
+    config: MutableMapping[str, Any],
+    workdir: Path,
+) -> int:
+    collector_args = [
+        args.collector_query,
+        "--config",
+        str(config_path),
+        "--state-dir",
+        str(args.state_dir or (workdir / "collector_state")),
+    ]
+    if args.limit is not None:
+        collector_args.extend(["--limit", str(args.limit)])
+    if args.providers:
+        collector_args.extend(["--providers", *args.providers])
+    if getattr(args, "no_resume", False):
+        collector_args.append("--no-resume")
+
+    collector_parser = collect_theories.build_parser()
+    collector_namespace = collector_parser.parse_args(collector_args)
+
+    result = collect_theories.run_pipeline(
+        collector_namespace,
+        parser=collector_parser,
+        config=config,
+        config_path=config_path,
+    )
+
+    if result != 0:
+        return result
+
+    outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
+    theories_path = Path(outputs_cfg.get("theories", workdir / "theories.csv"))
+    questions_path = Path(outputs_cfg.get("questions", workdir / "questions.csv"))
+    reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
+    try:
+        score_progress.generate_progress_report(
+            theories_path,
+            questions_path,
+            reports_dir,
+            confidence_threshold=float(args.confidence_threshold),
+        )
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to generate progress report")
+
+    if args.questions_ground_truth:
+        try:
+            report = question_validation.validate_from_paths(
+                questions_path,
+                Path(args.questions_ground_truth),
+            )
+            logger.info("\n%s", question_validation.format_report(report))
+            if args.questions_report:
+                question_validation.write_report(report, Path(args.questions_report))
+            if report.has_failures and args.fail_on_question_mismatch:
+                return 1
+        except Exception:
+            logger.exception("Question validation failed")
+            if args.fail_on_question_mismatch:
+                return 1
+
+    return result
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
@@ -361,7 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         logger.info("Running review pipeline with args: %s", pipeline_args)
         pipeline_result = run_pipeline.main(pipeline_args)
-        if pipeline_result != 0:
+        if PMpipeline_result != 0:
             return pipeline_result
     else:
         logger.info(
@@ -385,62 +452,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = collect_theories.load_config(config_path)
     _prepare_collector_config(config, targets=targets, ontology_path=ontology_path, workdir=workdir)
 
-    collector_args = [
-        args.collector_query,
-        "--config",
-        str(config_path),
-        "--state-dir",
-        str(args.state_dir or (workdir / "collector_state")),
-    ]
-    if args.limit is not None:
-        collector_args.extend(["--limit", str(args.limit)])
-    if args.providers:
-        collector_args.extend(["--providers", *args.providers])
-    if args.no_resume:
-        collector_args.append("--no-resume")
-
-    collector_parser = collect_theories.build_parser()
-    collector_namespace = collector_parser.parse_args(collector_args)
-
-    result = collect_theories.run_pipeline(
-        collector_namespace,
-        parser=collector_parser,
-        config=config,
+    return _run_collector(
+        args=args,
         config_path=config_path,
+        config=config,
+        workdir=workdir,
     )
-
-    if result == 0:
-        outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
-        theories_path = Path(outputs_cfg.get("theories", workdir / "theories.csv"))
-        questions_path = Path(outputs_cfg.get("questions", workdir / "questions.csv"))
-        reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
-        try:
-            score_progress.generate_progress_report(
-                theories_path,
-                questions_path,
-                reports_dir,
-                confidence_threshold=float(args.confidence_threshold),
-            )
-        except Exception:  # pragma: no cover - defensive logging
-            logger.exception("Failed to generate progress report")
-
-        if args.questions_ground_truth:
-            try:
-                report = question_validation.validate_from_paths(
-                    questions_path,
-                    Path(args.questions_ground_truth),
-                )
-                logger.info("\n%s", question_validation.format_report(report))
-                if args.questions_report:
-                    question_validation.write_report(report, Path(args.questions_report))
-                if report.has_failures and args.fail_on_question_mismatch:
-                    return 1
-            except Exception:
-                logger.exception("Question validation failed")
-                if args.fail_on_question_mismatch:
-                    return 1
-
-    return result
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
