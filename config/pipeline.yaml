@@ -1,0 +1,406 @@
+api_keys:
+  openalex:
+    env: OPENALEX_API_KEY
+    default: "set-your-openalex-token"
+  crossref_contact:
+    env: CROSSREF_API_KEY
+    default: "you@example.com"
+  pubmed:
+    env: PUBMED_API_KEY
+    default: "set-your-pubmed-token"
+  serpapi:
+    env: SERPAPI_KEY
+    default: "set-your-serpapi-token"
+  semantic_scholar:
+    env: SEMANTIC_SCHOLAR_KEY
+    default: "set-your-semanticscholar-token"
+  openai:
+    env: OPENAI_API_KEY
+  scihub_email:
+    env: SCIHUB_EMAIL
+  scihub_rapidapi:
+    env: SCIHUB_RAPIDAPI_KEY
+  annas_archive:
+    env: ANNAS_ARCHIVE_API_KEY
+
+data_sources:
+  seed_papers: data/examples/seed_papers.json
+
+providers:
+  - name: openalex
+    type: openalex
+    enabled: true
+    api_key_key: openalex
+    batch_size: 200
+    rate_limit_per_sec: 5
+    query_shards:
+      - "{query}"
+      - "{query} aging"
+  - name: crossref
+    type: crossref
+    enabled: false  # Crossref remains optional; PubMed powers quickstart by default
+    api_key_key: crossref_contact
+    batch_size: 100
+    rate_limit_per_sec: 10
+    query_shards:
+      - "{query}"
+  - name: serpapi_scholar
+    type: serpapi_scholar
+    enabled: true
+    api_key_key: serpapi
+    base_url: https://serpapi.com/search.json
+    batch_size: 10
+    rate_limit_per_sec: 0.5
+    extra:
+      engine: google_scholar
+      max_page_size: 10
+  - name: semantic_scholar
+    type: semantic_scholar
+    enabled: true
+    api_key_key: semantic_scholar
+    base_url: https://api.semanticscholar.org/graph/v1/paper/search
+    batch_size: 100
+    rate_limit_per_sec: 4
+    extra:
+      fields:
+        - title
+        - abstract
+        - authors
+        - year
+        - externalIds
+        - openAccessPdf
+        - url
+        - citationCount
+        - influentialCitationIds
+  - name: pubmed
+    type: pubmed
+    enabled: true
+    api_key_key: pubmed
+    batch_size: 200
+    rate_limit_per_sec: 3
+  - name: scihub
+    type: scihub
+    enabled: false
+    api_key_key: scihub_rapidapi
+    base_url: https://sci-hub2.p.rapidapi.com/search
+    batch_size: 20
+    rate_limit_per_sec: 1
+    extra:
+      mode: rapidapi
+      rapidapi_host: sci-hub2.p.rapidapi.com
+      email_key: scihub_email
+      params:
+        type: doi
+      fulltext_keys:
+        - fullTextUrl
+        - url
+        - pdfUrl
+  - name: annas_archive
+    type: annas_archive
+    enabled: false
+    api_key_key: annas_archive
+    base_url: https://annas-archive-api.p.rapidapi.com/search
+    batch_size: 25
+    rate_limit_per_sec: 1
+    extra:
+      rapidapi_host: annas-archive-api.p.rapidapi.com
+      link_keys:
+        - mirrors
+        - files
+      params:
+        category: scimag
+  - name: biorxiv
+    type: biorxiv
+    enabled: false  # Enable once you have confirmed <=1 req/sec with your deployment
+    base_url: https://api.biorxiv.org/details/biorxiv
+    batch_size: 100
+    rate_limit_per_sec: 1
+    date_window:
+      from: 2023-01-01
+      to: 2023-01-15
+    categories:
+      - neuroscience
+  - name: medrxiv
+    type: medrxiv
+    enabled: false
+    base_url: https://api.biorxiv.org/details/medrxiv
+    batch_size: 100
+    rate_limit_per_sec: 1
+    date_window:
+      from: 2023-01-01
+      to: 2023-01-15
+    categories:
+      - geriatrics
+
+classification:
+  llm:
+    model: null  # Override via CLI or set a model name when ready
+    api_key_key: openai
+    batch_size: 4
+    cache_dir: data/cache/llm
+    max_retries: 3
+    retry_backoff: 2.0
+    request_timeout: 60
+  keywords:
+    Cellular Senescence:
+      keywords:
+        - "cellular senescence"
+        - "senescent cells"
+        - "senescence-associated secretory phenotype"
+      subtheories:
+        Senescence-Associated Secretory Phenotype:
+          keywords:
+            - "senescence-associated secretory phenotype"
+            - "sasp factors"
+            - "inflammatory senescence"
+        Senolytic Strategies:
+          keywords:
+            - "senolytic therapy"
+            - "senescent cell clearance"
+            - "senolytic interventions"
+    Mitochondrial Dysfunction:
+      keywords:
+        - "mitochondrial dysfunction aging"
+        - "mitochondrial quality control"
+        - "mitophagy decline"
+      subtheories:
+        Mitophagy Decline:
+          keywords:
+            - "mitophagy aging"
+            - "mitophagy impairment"
+            - "autophagy mitochondria"
+        Respiratory Chain Stress:
+          keywords:
+            - "electron transport chain stress"
+            - "respiratory chain dysfunction"
+            - "mitochondrial ros production"
+    Epigenetic Remodeling:
+      keywords:
+        - "epigenetic aging"
+        - "chromatin remodeling"
+        - "epigenetic drift"
+      subtheories:
+        DNA Methylation Drift:
+          keywords:
+            - "dna methylation aging"
+            - "epigenetic clock drift"
+            - "methylome remodeling"
+        Histone Modification Imbalance:
+          keywords:
+            - "histone modification aging"
+            - "chromatin accessibility aging"
+            - "histone acetylation decline"
+
+corpus:
+  ontology_suggestions_path: data/pipeline/aging_ontology.json
+  base_query: "aging theory"
+  bootstrap:
+    enabled: true
+    queries:
+      aging_theory_reviews:
+        query: '"aging theory" review'
+        providers:
+          - pubmed
+          - openalex
+        min_citations: 35
+        max_reviews: 8
+      hallmarks_of_aging:
+        query: '"hallmarks of aging" review'
+        providers:
+          - pubmed
+          - semantic_scholar
+        min_citations: 40
+        max_reviews: 6
+      damage_accumulation:
+        query: '"damage accumulation" aging review'
+        providers:
+          - openalex
+          - serpapi_scholar
+        min_citations: 25
+        max_reviews: 6
+      longevity_pathways:
+        query: '"longevity pathway" aging theory review'
+        providers:
+          - pubmed
+          - semantic_scholar
+        min_citations: 20
+        max_reviews: 5
+    providers:
+      - pubmed
+      - openalex
+      - semantic_scholar
+      - serpapi_scholar
+    min_citations: 20
+    limit_per_query: 60
+    max_per_query: 10
+    resume: true
+    state_prefix: "bootstrap::reviews"
+    max_theories: 10
+    balance:
+      max_children: 6
+    cache_path: data/cache/bootstrap_ontology.json
+    update_targets: false
+  cache_dir: data/cache/literature
+  min_citation_count: 5
+  prefer_reviews: true
+  sort_by_citations: true
+  global_limit: 1500
+  expansion:
+    enabled: true
+    max_new_queries: 5
+    max_snippets: 12
+    max_gpt_queries: 4
+    embedding_neighbors: 6
+    gpt_prompt: |
+      You are helping expand literature search queries for the Hackaging project.
+      Return a JSON array of 3-5 new search strings grounded in the supplied snippets.
+      Avoid duplicates of the existing queries and keep each query under 12 words.
+      Prioritise mechanistic or pathway-oriented phrases tied to aging theories.
+  targets:
+    Cellular Senescence:
+      target: 7
+      queries:
+        - "{base_query} cellular senescence"
+        - "senescent cell burden aging"
+      subtheories:
+        Senescence-Associated Secretory Phenotype:
+          target: 6
+          queries:
+            - "{base_query} senescence-associated secretory phenotype"
+            - "sasp inflammatory aging"
+        Senolytic Strategies:
+          target: 6
+          queries:
+            - "{base_query} senolytic therapy"
+            - "senescent cell clearance drugs"
+    Mitochondrial Dysfunction:
+      target: 7
+      queries:
+        - "{base_query} mitochondrial dysfunction"
+        - "mitochondrial quality control aging"
+      subtheories:
+        Mitophagy Decline:
+          target: 6
+          queries:
+            - "{base_query} mitophagy aging"
+            - "mitophagy decline senescence"
+        Respiratory Chain Stress:
+          target: 6
+          queries:
+            - "{base_query} respiratory chain stress"
+            - "electron transport chain aging"
+    Epigenetic Remodeling:
+      target: 7
+      queries:
+        - "{base_query} epigenetic aging"
+        - "chromatin remodeling longevity"
+      subtheories:
+        DNA Methylation Drift:
+          target: 6
+          queries:
+            - "{base_query} dna methylation drift"
+            - "epigenetic clock instability"
+        Histone Modification Imbalance:
+          target: 6
+          queries:
+            - "{base_query} histone modification aging"
+            - "chromatin state longevity"
+extraction:
+  llm:
+    enabled: true
+    model: null  # Override via CLI to enable GPT-backed extraction
+    temperature: 0.0
+    batch_size: 4
+    cache_dir: data/cache/llm_extraction
+    max_retries: 3
+    retry_backoff: 2.0
+    request_timeout: 60
+    max_sentences: 5
+    decline_answers:
+      - unknown
+      - none
+      - no_answer
+    system_prompt: |
+      You are assisting the Hackaging project by answering structured research questions.
+      Select the best answer category using only the supplied evidence sentences.
+      Choose exactly one of the allowed answers verbatim.
+      If the evidence is insufficient, respond with "unknown".
+    request_template: |
+      Question: {question}
+      Allowed answers: {choices}
+      Evidence sentences:
+      {evidence}
+      Respond with a JSON object containing keys "answer", "confidence", and "rationale".
+      The "answer" must exactly match one of the allowed answers.
+  calibration:
+    gpt_weight: 0.6
+    override_threshold: 0.85
+    agreement_boost: 0.1
+    disagreement_penalty: 0.1
+  questions:
+    - id: Q1
+      prompt: "Does the paper report a biomarker of aging?"
+      allowed_answers:
+        - "Yes, quantitatively shown"
+        - "Yes, mentioned without data"
+        - "No evidence found"
+    - id: Q2
+      prompt: "Does the paper describe a molecular mechanism for longevity?"
+      allowed_answers:
+        - "Mechanism supported by experiments"
+        - "Mechanism hypothesized"
+        - "No mechanism discussed"
+    - id: Q3
+      prompt: "Does the study test or propose a longevity intervention?"
+      allowed_answers:
+        - "Validated longevity intervention"
+        - "Proposed longevity intervention"
+        - "No intervention discussed"
+    - id: Q4
+      prompt: "Does the paper address irreversibility or reversibility of aging changes?"
+      allowed_answers:
+        - "Changes appear irreversible"
+        - "Changes appear reversible"
+        - "Not discussed"
+    - id: Q5
+      prompt: "Does the paper provide cross-species lifespan predictors?"
+      allowed_answers:
+        - "Yes, quantitatively shown"
+        - "Yes, mentioned without data"
+        - "No evidence found"
+    - id: Q6
+      prompt: "Does the paper focus on naked mole rat longevity?"
+      allowed_answers:
+        - "Primary focus of the paper"
+        - "Mentioned in passing"
+        - "Not mentioned"
+    - id: Q7
+      prompt: "Does the paper focus on avian longevity?"
+      allowed_answers:
+        - "Primary focus of the paper"
+        - "Mentioned in passing"
+        - "Not mentioned"
+    - id: Q8
+      prompt: "Does the paper link body size to longevity?"
+      allowed_answers:
+        - "Link supported by data"
+        - "Link is speculative"
+        - "No link reported"
+    - id: Q9
+      prompt: "Does the paper examine calorie restriction and lifespan?"
+      allowed_answers:
+        - "Experimental evidence presented"
+        - "Observational evidence presented"
+        - "No evidence presented"
+
+outputs:
+  papers: data/examples/papers.csv
+  theories: data/examples/theories.csv
+  theory_papers: data/examples/theory_papers.csv
+  questions: data/examples/questions.csv
+  cache_dir: data/cache
+
+pipeline:
+  max_results: 10
+  parallel_fetch: 4
+  classification_workers: 4
